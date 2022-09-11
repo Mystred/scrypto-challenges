@@ -58,7 +58,7 @@ blueprint! {
         ) -> (ComponentAddress, Bucket) {
 
             assert!(performance_fee >= Decimal::ZERO, "The given fee is < 0");
-            assert!(performance_fee <= dec!(20), "The given fee is higher than the maximum allowed percentage of 20%");
+            assert!(performance_fee <= dec!("20"), "The given fee is higher than the maximum allowed percentage of 20%");
 
             info!(
                 "[Pool Creation]: Creating a new investment pool with the name: {} and symbol: {}.",
@@ -268,7 +268,7 @@ blueprint! {
         pub fn change_fee(&mut self, performance_fee: Decimal) {
 
             assert!(performance_fee >= Decimal::ZERO, "The given fee is < 0");
-            assert!(performance_fee <= dec!(20), "The given fee is higher than the maximum allowed percentage of 20%.");
+            assert!(performance_fee <= dec!("20"), "The given fee is higher than the maximum allowed percentage of 20%.");
 
             // This is an event to mint all newly accrued performance fees.
             let (present_token_price, _) = self.pool_token_price();
@@ -299,7 +299,8 @@ blueprint! {
         /// # Returns:
         ///
         /// * (Bucket) - A bucket containing the pool tracking tokens as representation of the ownership of the pool.
-        pub fn invest(&mut self, mut asset_to_invest: Bucket)  -> Bucket {
+        /// * Option<Bucket> - May return any remaining investment funds that couldn't be invested appropriately.
+        pub fn invest(&mut self, mut asset_to_invest: Bucket)  -> (Bucket, Option<Bucket>) {
 
             assert_eq!(asset_to_invest.resource_address(), self.base_currency, "Only investments in the base currency are allowed.");
             assert!((asset_to_invest.amount() > Decimal::ZERO), "Bucket is empty.");
@@ -327,6 +328,13 @@ blueprint! {
                 // Fill the bucket with the newly minted pool tokens.
                 pool_token_bucket.put(self.mint_pool_tokens(tokens_to_mint));
 
+                info!(
+                    "[Invest]: Invested {} of the base currency in return for {} of pool tracking tokens.",
+                    amount_asset_to_invest,
+                    pool_token_bucket.amount()
+                );
+            (pool_token_bucket, None)
+
             // Perform the whole investment process via swapping the provided base currency to the target assets in the right percentage.
             } else {
                 for (asset_address, asset_vault) in self.pool_vaults.iter() {
@@ -336,7 +344,7 @@ blueprint! {
                     percentages_vec.push((*asset_address, value_percentage));
                 }
 
-                // The two for loops needed to be separated as otherwise rusts ownership concept couldn't be satisfied
+                // The two for-5loops needed to be separated as otherwise rusts ownership concept couldn't be satisfied
                 // in a straight forward way (cause the iterator over self.pool_vaults would either be mutable or not
                 // --> method calls using (im)mutable self would'nt work.
                 for (asset_address, value_percentage) in percentages_vec.iter(){
@@ -358,19 +366,21 @@ blueprint! {
 
                     // Add all assets to their vault in the investment_pool.
                     self.deposit_to_pool(swapped_asset);
+
+                    info!("Amount of USDT: {}", asset_to_invest.amount());
                 }
+
+                // As this is a new investment this is an event to mint previously accrued performance fees.
+                self.eval_accrued_fees(present_token_price);
+
+                info!(
+                    "[Invest]: Invested {} of the base currency in return for {} of pool tracking tokens.",
+                    amount_asset_to_invest,
+                    pool_token_bucket.amount()
+                );
+                // Return pool tokens and also empty bucket of investment funds (the bucket must be consumed somehow)
+                (pool_token_bucket, Some(asset_to_invest))
             }
-            // As this is a new investment this is an event to mint previously accrued performance fees.
-            self.eval_accrued_fees(present_token_price);
-
-            info!(
-                "[Invest]: Invested {} of the base currency in return for {} of pool tracking tokens.",
-                amount_asset_to_invest,
-                pool_token_bucket.amount()
-            );
-
-            // Return the pool tokens as ownership representation of stake.
-            pool_token_bucket
         }
 
         /// Main interface method to withdraw investments from this investment_pool.
@@ -441,6 +451,23 @@ blueprint! {
             investment_to_return
            }
 
+        /// Returns a vector with address and amount of all assets in the investment pool.
+        ///
+        /// # Return
+        /// * Vec<(ResourceAddress, Decimal)> - Vector with address and amount of all assets
+        pub fn get_assets_in_pool(&self) -> Vec<(ResourceAddress, Decimal)> {
+            let mut asset_vec: Vec<(ResourceAddress, Decimal)> = Vec::new();
+            for (asset_address, asset_vault) in self.pool_vaults.iter() {
+                asset_vec.push((*asset_address, asset_vault.amount()));
+                info!(
+                    "[Pool]: Address of the asset: [{}], amount: {}.",
+                    *asset_address,
+                    asset_vault.amount()
+                );
+            }
+            asset_vec
+        }
+
 
         /// Returns the symbol of the base currency.
         ///
@@ -470,7 +497,7 @@ blueprint! {
         ///
         /// * (Decimal) - Present asset price (based on NAV).
         pub fn get_asset_price(&self, asset: ResourceAddress) -> Decimal {
-            match self.oracle.get_price(self.base_currency, asset) {
+            match self.oracle.get_price(asset, self.base_currency) {
                 Some(token_price) => token_price,
                 None => std::process::abort(),
             }
@@ -539,7 +566,7 @@ blueprint! {
             if self.pool_token_supply() == Decimal::ZERO {
                 info!("Created the first pool token with an approximate starting price of 10[base currency]");
                 // This is the first time this pool is funded with anything! Mint first tokens with a base NAV (net asset value) of TOKEN_START_PRICE
-                provided_value / dec!(10)
+                provided_value / dec!("10")
             } else {
                 // The pool already has some funds. Determine tokens_to_mint.
                 (provided_value / market_cap) * self.pool_token_supply()
@@ -563,13 +590,13 @@ blueprint! {
                 if present_token_price > self.high_water_mark {
 
                     let diff_to_ath = present_token_price - self.high_water_mark;
-                    let accrued_fees = (diff_to_ath / present_token_price) * (self.performance_fee/dec!(100)) * self.pool_token_supply();
+                    let accrued_fees = (diff_to_ath / present_token_price) * (self.performance_fee/dec!("100")) * self.pool_token_supply();
 
                     // Mint the pool tokens to cover the accrued fees and put them into their vault.
                     self.performance_fee_vault.put(self.mint_pool_tokens(accrued_fees));
 
                     // Update the high-water-mark: Save the present token price (but accounted for the token inflation due to minting).
-                    self.high_water_mark = present_token_price * (Decimal::ONE - (self.performance_fee/dec!(100)));
+                    self.high_water_mark = present_token_price * (Decimal::ONE - (self.performance_fee/dec!("100")));
                 }
             } else { // This investment_pool is empty --> Reset the high_water_mark.
                 self.high_water_mark = Decimal::ZERO;

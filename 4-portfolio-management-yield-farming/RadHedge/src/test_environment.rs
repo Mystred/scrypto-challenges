@@ -39,7 +39,7 @@ blueprint! {
         ///
         /// * (Vec<Bucket>) -All buckets with newly created currencies.
         #[allow(clippy::vec_init_then_push)]
-        pub fn create_test_environment() -> Vec<Bucket> {
+        pub fn create_test_environment() -> (ComponentAddress,Vec<Bucket>) {
             // Instantiate the price oracle with one admin.
             let (oracle_admin_badge_bucket, oracle_address) = PriceOracle::instantiate_oracle(1);
             let oracle: PriceOracle = oracle_address.into();
@@ -88,8 +88,17 @@ blueprint! {
             // Create a lp with ada and usdt: 40_000_000:10_000_000 (ada = 0.4USDT) and keep tracking tokens.
             lp_tracking_tokens.push(Vault::with_bucket(dex.new_liquidity_pool(currencies[4].take(5_000), currencies[2].take(100_000_000))));
 
+            // Set prices on the oracle.
+            oracle_admin_badge_bucket.authorize(|| {
+                oracle.update_price(currencies[0].resource_address(), currencies[2].resource_address(), dec!("20000"));
+                oracle.update_price(currencies[0].resource_address(), currencies[1].resource_address(), dec!("10"));
+                oracle.update_price(currencies[1].resource_address(), currencies[2].resource_address(), dec!("2000"));
+                oracle.update_price(currencies[3].resource_address(), currencies[2].resource_address(), dec!("300"));
+                oracle.update_price(currencies[4].resource_address(), currencies[2].resource_address(), dec!("0.4"));
+            });
+
             // Instantiate the test environment.
-            Self {
+            let test_env: ComponentAddress = Self {
                 oracle,
                 oracle_address,
                 oracle_admin_badge: Vault::with_bucket(oracle_admin_badge_bucket),
@@ -103,13 +112,33 @@ blueprint! {
             .globalize();
 
             info!(
-                    "[Test Environment Creation]: Created a new test environment with price oracle [{}], RaDEX: [{}] and faucet [{}].",
+                    "[Test Environment Creation]: Created a new test environment: {}
+                    price oracle address: {}
+                    RaDEX address: {} 
+                    faucet address: {}",
+                    test_env,
                     oracle_address,
                     dex_address,
                     faucet_address
                 );
 
-            currencies
+
+            info!(
+                    "[Test Environment Creation]: Created currencies:
+                    USDT address: {}
+                    BTC address: {} 
+                    ETH address: {} 
+                    BNB address: {} 
+                    ADA address: {}",
+                    currencies[2].resource_address(),
+                    currencies[0].resource_address(),
+                    currencies[1].resource_address(),
+                    currencies[3].resource_address(),
+                    currencies[4].resource_address()
+            );
+
+
+            (test_env,currencies)
 
         }
 
@@ -128,6 +157,10 @@ blueprint! {
             self.faucet_address
         }
 
-        // Change oracle price. TODO
+        // Change oracle price.
+        pub fn change_oracle_price(&self, token: ResourceAddress, base: ResourceAddress, price: Decimal) {
+            self.oracle_admin_badge
+            .authorize(|| self.oracle.update_price(token,base,price)) // Returns bucket with new pool tokens.
+        }
     }
 }
